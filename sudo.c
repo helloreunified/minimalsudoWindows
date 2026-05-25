@@ -1,89 +1,61 @@
 #include <windows.h>
-#include <shellapi.h>
 #include <stdio.h>
 
-typedef struct {
-    ULONG dwOSVersionInfoSize;
-    ULONG dwMajorVersion;
-    ULONG dwMinorVersion;
-    ULONG dwBuildNumber;
-    ULONG dwPlatformId;
-    WCHAR szCSDVersion[128];
-} RTL_OSVERSIONINFOW;
-
-typedef LONG (WINAPI *RtlGetVersionPtr)(RTL_OSVERSIONINFOW *);
-
-void PrintWindowsVersion(void)
+BOOL Is64BitWindows(void)
 {
-    HMODULE hMod = GetModuleHandleW(L"ntdll.dll");
-    if (!hMod) return;
+    BOOL wow64 = FALSE;
 
-    RtlGetVersionPtr fxPtr =
-        (RtlGetVersionPtr)GetProcAddress(hMod, "RtlGetVersion");
-    if (!fxPtr) return;
+    typedef BOOL (WINAPI *FN)(HANDLE, PBOOL);
 
-    RTL_OSVERSIONINFOW rovi = {0};
-    rovi.dwOSVersionInfoSize = sizeof(rovi);
-	
-	printf("Microsoft Windows [Version ");
-	
-    if (fxPtr(&rovi) == 0) {
-        printf("%lu.%lu.%lu",
-               rovi.dwMajorVersion,
-               rovi.dwMinorVersion,
-               rovi.dwBuildNumber);
-    }
-	
-	printf("]\n");
+    FN fn = (FN)GetProcAddress(
+        GetModuleHandleA("kernel32.dll"),
+        "IsWow64Process");
+
+    if (fn)
+        fn(GetCurrentProcess(), &wow64);
+
+    return wow64;
 }
 
-int main()
+int main(void)
 {
-	PrintWindowsVersion();
-	
-    char *fullCmd = GetCommandLineA();
+    char full[MAX_PATH + 8192];
 
-    char *args = fullCmd;
-    if (*args == '"') {
-        args++;
-        while (*args && *args != '"') args++;
-        if (*args == '"') args++;
-    } else {
-        while (*args && *args != ' ') args++;
-    }
-    while (*args == ' ') args++;
+    const char *exe =
+        Is64BitWindows()
+        ? "sudo64.exe"
+        : "sudo32.exe";
 
-    if (*args == '\0') {
-        printf("Not specified.");
+    snprintf(
+        full,
+        sizeof(full),
+        "\"%s\" %s",
+        exe,
+        GetCommandLineA());
+
+    STARTUPINFOA si = {0};
+    PROCESS_INFORMATION pi = {0};
+
+    si.cb = sizeof(si);
+
+    if (!CreateProcessA(
+            NULL,
+            full,
+            NULL,
+            NULL,
+            FALSE,
+            0,
+            NULL,
+            NULL,
+            &si,
+            &pi))
+    {
+        printf("Launch failed.\n");
         return 1;
     }
 
-    char cwd[MAX_PATH];
-    GetCurrentDirectoryA(MAX_PATH, cwd);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
 
-    char cmdLine[8192];
-    snprintf(cmdLine, sizeof(cmdLine),
-    "/k cd /d \"%s\" && "
-    "%s & "
-    "echo. & "
-    "echo The process terminated with exit code %%ERRORLEVEL%%. & "
-    "echo Press ENTER to exit... & "
-    "pause >nul & exit",
-    cwd, args);
-
-    SHELLEXECUTEINFOA sei = {0};
-    sei.cbSize = sizeof(sei);
-    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
-    sei.lpVerb = "runas";
-    sei.lpFile = "cmd.exe";
-    sei.lpParameters = cmdLine;
-    sei.nShow = SW_SHOW;
-
-    if (!ShellExecuteExA(&sei)) {
-        printf("Elevation failed.\n");
-        return 1;
-    }
-
-	CloseHandle(sei.hProcess);
     return 0;
 }
